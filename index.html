@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#17170f" />
+  <title>Hammond Eggs</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">12-bar blues laboratory</p>
+        <h1>Hammond Eggs</h1>
+        <p class="lede">Turn one blues form from plain dominant sevenths into richer, voice-led Hammond harmony.</p>
+      </div>
+      <div class="transport" aria-label="Transport controls">
+        <button id="playButton" class="primary" type="button">▶ Play</button>
+        <button id="stopButton" type="button">■ Stop</button>
+        <button id="regenerateButton" type="button">↻ Regenerate</button>
+      </div>
+    </header>
+
+    <section class="control-panel" aria-label="Blues controls">
+      <label>
+        <span>Key</span>
+        <select id="keySelect">
+          <option>C</option><option>Db</option><option>D</option><option>Eb</option><option>E</option><option>F</option>
+          <option>Gb</option><option>G</option><option>Ab</option><option>A</option><option>Bb</option><option>B</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Form</span>
+        <select id="formSelect">
+          <option value="basic">Basic</option>
+          <option value="quick">Quick change</option>
+          <option value="jazz">Jazz blues</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Tempo <output id="tempoOutput">92</output> BPM</span>
+        <input id="tempo" type="range" min="55" max="180" value="92" />
+      </label>
+
+      <label>
+        <span>Complexity <output id="complexityOutput">45</output>%</span>
+        <small>Available harmonic vocabulary</small>
+        <input id="complexity" type="range" min="0" max="100" value="45" />
+      </label>
+
+      <label>
+        <span>Harmonic density <output id="densityOutput">40</output>%</span>
+        <small>How often richer choices appear</small>
+        <input id="density" type="range" min="0" max="100" value="40" />
+      </label>
+
+      <label>
+        <span>Voice leading <output id="voiceLeadingOutput">75</output>%</span>
+        <small>Static shapes → connected independent voices</small>
+        <input id="voiceLeading" type="range" min="0" max="100" value="75" />
+      </label>
+
+      <label>
+        <span>Voicing width <output id="widthOutput">55</output>%</span>
+        <small>Tight clusters → open / octave-spread voicings</small>
+        <input id="width" type="range" min="0" max="100" value="55" />
+      </label>
+    </section>
+
+    <section class="registration" aria-label="Organ registration">
+      <div>
+        <p class="section-kicker">Organ</p>
+        <h2>Registration</h2>
+      </div>
+      <div class="drawbars" aria-label="Drawbars">
+        <label><span>16′</span><input data-drawbar="0" type="range" min="0" max="8" value="5" /></label>
+        <label><span>5⅓′</span><input data-drawbar="1" type="range" min="0" max="8" value="2" /></label>
+        <label><span>8′</span><input data-drawbar="2" type="range" min="0" max="8" value="8" /></label>
+        <label><span>4′</span><input data-drawbar="3" type="range" min="0" max="8" value="7" /></label>
+        <label><span>2⅔′</span><input data-drawbar="4" type="range" min="0" max="8" value="4" /></label>
+        <label><span>2′</span><input data-drawbar="5" type="range" min="0" max="8" value="3" /></label>
+      </div>
+      <label class="switch-row"><input id="leslie" type="checkbox" checked /> Leslie movement</label>
+    </section>
+
+    <section class="progression-section">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">Generated harmony</p>
+          <h2 id="progressionTitle">12 bars in C</h2>
+        </div>
+        <p id="status" aria-live="polite">Ready.</p>
+      </div>
+      <div id="progression" class="progression" aria-label="Generated chord progression"></div>
+    </section>
+
+    <section class="detail-panel" id="detailPanel" aria-live="polite">
+      <p class="section-kicker">Selected voicing</p>
+      <h2 id="detailChord">Choose a bar</h2>
+      <p id="detailNotes">Click any chord to inspect its actual notes and voicing family.</p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
