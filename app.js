@@ -19,10 +19,12 @@
     complexity: document.querySelector('#complexity'),
     density: document.querySelector('#density'),
     voiceLeading: document.querySelector('#voiceLeading'),
+    width: document.querySelector('#width'),
     tempoOutput: document.querySelector('#tempoOutput'),
     complexityOutput: document.querySelector('#complexityOutput'),
     densityOutput: document.querySelector('#densityOutput'),
     voiceLeadingOutput: document.querySelector('#voiceLeadingOutput'),
+    widthOutput: document.querySelector('#widthOutput'),
     progression: document.querySelector('#progression'),
     title: document.querySelector('#progressionTitle'),
     status: document.querySelector('#status'),
@@ -45,6 +47,7 @@
   const normalizeRoot = n => enharmonic[n] || n;
   const rootForDegree = (key, degree) => rootNames[(pitchClass[key] + degreeSemitones[degree]) % 12];
   const sameVoicing = (a,b) => Boolean(a && b && a.length === b.length && a.every((n,i)=>n===b[i]));
+  const pitchClassOf = midi => ((midi % 12) + 12) % 12;
 
   function baseQuality(degree, form) {
     if (form === 'jazz' && [2,3].includes(degree)) return {name:'m7', intervals:[0,3,7,10], weight:10};
@@ -88,46 +91,80 @@
     const richChance = clamp((density / 100) + structuralBoost, 0, 1);
     const pool = vocabulary(complexity, degree, form);
 
-    let candidates;
-    if (Math.random() > richChance) {
-      candidates = [baseline];
-    } else {
-      candidates = [...pool];
-    }
+    let candidates = Math.random() > richChance ? [baseline] : [...pool];
 
-    // A blues form may repeat the same harmonic function, but the realised chord
-    // should evolve. If the same root was just heard and another legal colour is
-    // available, remove the exact previous chord quality from this choice.
-    if (previousChord && previousChord.root === root && candidates.length > 1) {
-      const varied = candidates.filter(q => q.name !== previousChord.quality.name);
+    if (previousChord && previousChord.root === root && pool.length > 1) {
+      const source = candidates.length > 1 ? candidates : pool;
+      const varied = source.filter(q => q.name !== previousChord.quality.name);
       if (varied.length) candidates = varied;
     }
 
     return candidates.length === 1 ? candidates[0] : weightedPick(candidates);
   }
 
+  function closedShape(rootPc, pitchClasses, bassMidi) {
+    return pitchClasses.map(pc => {
+      let note = bassMidi + ((pc - pitchClassOf(bassMidi)) + 12) % 12;
+      if (note < bassMidi) note += 12;
+      return note;
+    }).sort((a,b)=>a-b);
+  }
+
+  function addCandidate(map, notes, family, rootPc) {
+    const sorted = [...new Set(notes)].sort((a,b)=>a-b);
+    if (sorted.length < 3 || sorted[0] < 40 || sorted[sorted.length-1] > 84) return;
+    const key = sorted.join(',');
+    if (!map.has(key)) {
+      map.set(key, {
+        notes: sorted,
+        family,
+        span: sorted[sorted.length-1] - sorted[0],
+        hasRoot: sorted.some(n => pitchClassOf(n) === rootPc)
+      });
+    }
+  }
+
   function candidateVoicings(rootPc, intervals) {
     const pitchClasses = [...new Set(intervals.map(i => (rootPc + i) % 12))];
-    const result = [];
+    const result = new Map();
 
-    for (let anchor = 43; anchor <= 63; anchor += 2) {
-      const notes = pitchClasses.map(pc => {
-        let midi = anchor + ((pc - anchor) % 12 + 12) % 12;
-        while (midi < 46) midi += 12;
-        while (midi > 77) midi -= 12;
-        return midi;
-      }).sort((a,b)=>a-b);
+    for (let bass = 43; bass <= 60; bass += 1) {
+      const closed = closedShape(rootPc, pitchClasses, bass);
+      addCandidate(result, closed, 'closed', rootPc);
 
-      for (let shift=-1; shift<=1; shift++) {
-        const shifted = notes
-          .map((n,i)=>i===0 ? n + shift*12 : n)
-          .sort((a,b)=>a-b);
+      if (closed.length >= 4) {
+        const drop2 = [...closed];
+        drop2[drop2.length - 2] -= 12;
+        addCandidate(result, drop2, 'drop-2', rootPc);
 
-        if (shifted[0] >= 41 && shifted[shifted.length-1] <= 81) result.push(shifted);
+        const drop3 = [...closed];
+        drop3[drop3.length - 3] -= 12;
+        addCandidate(result, drop3, 'drop-3', rootPc);
+      }
+
+      const open = closed.map((n,i) => i % 2 === 1 ? n + 12 : n);
+      addCandidate(result, open, 'open', rootPc);
+
+      if (closed.length >= 4) {
+        const topDoubled = [...closed, closed[closed.length-1] + 12];
+        addCandidate(result, topDoubled, 'octave top', rootPc);
+      }
+
+      const rootless = closed.filter(n => pitchClassOf(n) !== rootPc);
+      if (rootless.length >= 3) {
+        addCandidate(result, rootless, 'rootless', rootPc);
+        const rootlessOpen = rootless.map((n,i)=> i === rootless.length-1 ? n + 12 : n);
+        addCandidate(result, rootlessOpen, 'rootless open', rootPc);
       }
     }
 
-    return [...new Map(result.map(v => [v.join(','),v])).values()];
+    return [...result.values()];
+  }
+
+  function commonToneCount(a,b) {
+    if (!a || !b) return 0;
+    const pcsA = new Set(a.map(pitchClassOf));
+    return [...new Set(b.map(pitchClassOf))].filter(pc => pcsA.has(pc)).length;
   }
 
   function voiceDistance(a,b) {
@@ -139,52 +176,64 @@
     return aa.reduce((sum,n,i)=>sum+Math.abs(n-bb[i]),0);
   }
 
-  function chooseVoicing(rootPc, intervals, previous, depth) {
+  function contraryMotionScore(a,b) {
+    if (!a || a.length < 2 || b.length < 2) return 0;
+    const lowMove = b[0] - a[0];
+    const highMove = b[b.length-1] - a[a.length-1];
+    if (lowMove === 0 || highMove === 0) return 0;
+    return Math.sign(lowMove) !== Math.sign(highMove) ? 1 : 0;
+  }
+
+  function chooseVoicing(rootPc, intervals, previous, depth, width) {
     let candidates = candidateVoicings(rootPc, intervals);
 
-    // Never repeat the exact previous MIDI voicing when another valid realisation
-    // exists. This is independent of voice-leading depth.
     if (previous && candidates.length > 1) {
-      const nonRepeating = candidates.filter(v => !sameVoicing(v, previous));
+      const nonRepeating = candidates.filter(c => !sameVoicing(c.notes, previous));
       if (nonRepeating.length) candidates = nonRepeating;
     }
 
+    const targetSpan = 10 + (width / 100) * 24;
+    const widthTolerance = 6 + (1 - Math.abs(width - 50) / 50) * 8;
+    const widthFiltered = candidates.filter(c => Math.abs(c.span - targetSpan) <= widthTolerance);
+    if (widthFiltered.length >= 4) candidates = widthFiltered;
+
     if (!previous) {
-      const centered = [...candidates].sort((a,b)=>{
-        const ac = a.reduce((x,y)=>x+y,0)/a.length;
-        const bc = b.reduce((x,y)=>x+y,0)/b.length;
-        return Math.abs(ac-61)-Math.abs(bc-61);
-      });
-      return centered[0];
+      return [...candidates].sort((a,b)=>{
+        const ac = a.notes.reduce((x,y)=>x+y,0)/a.notes.length;
+        const bc = b.notes.reduce((x,y)=>x+y,0)/b.notes.length;
+        const aw = Math.abs(a.span-targetSpan);
+        const bw = Math.abs(b.span-targetSpan);
+        return (aw + Math.abs(ac-61)*0.25) - (bw + Math.abs(bc-61)*0.25);
+      })[0];
     }
 
-    if (depth <= 3) {
-      // Low depth deliberately preserves a root-position/static-inversion feel,
-      // but still chooses a different register so the same bar is not duplicated.
-      const rootPosition = candidates
-        .filter(v => ((v[0] % 12) + 12) % 12 === rootPc)
-        .sort((a,b)=>{
-          const ac = a.reduce((x,y)=>x+y,0)/a.length;
-          const bc = b.reduce((x,y)=>x+y,0)/b.length;
-          return Math.abs(ac-61)-Math.abs(bc-61);
-        });
-      return rootPosition[0] || candidates[0];
-    }
+    const scored = candidates.map(candidate => {
+      const notes = candidate.notes;
+      const move = voiceDistance(previous,notes);
+      const common = commonToneCount(previous,notes);
+      const center = notes.reduce((a,b)=>a+b,0)/notes.length;
+      const spanError = Math.abs(candidate.span-targetSpan);
+      const contrary = contraryMotionScore(previous,notes);
+      const hugeJumpPenalty = notes.reduce((penalty,n,i)=>{
+        const p = previous[Math.min(i, previous.length-1)];
+        return penalty + Math.max(0,Math.abs(n-p)-7);
+      },0);
 
-    const scored = candidates.map(v => {
-      const move = voiceDistance(previous,v);
-      const center = v.reduce((a,b)=>a+b,0)/v.length;
-      const spread = v[v.length-1]-v[0];
       const score =
-        move*(depth/100) +
-        Math.abs(center-61)*0.3 +
-        Math.max(0,spread-24)*0.25;
-      return {v,score};
+        move * (0.25 + depth/100) +
+        spanError * 0.45 +
+        Math.abs(center-61) * 0.14 +
+        hugeJumpPenalty * (0.45 + depth/125) -
+        common * (1.5 + depth/28) -
+        contrary * (depth/18) +
+        (candidate.family.startsWith('rootless') ? 0.8 : 0);
+
+      return {...candidate,score};
     }).sort((a,b)=>a.score-b.score);
 
-    const looseness = Math.floor((100-depth)/25);
-    const top = scored.slice(0,Math.max(1,1+looseness));
-    return top[Math.floor(Math.random()*top.length)].v;
+    const freedom = Math.floor((100-depth)/22);
+    const top = scored.slice(0,Math.max(1,1+freedom));
+    return top[Math.floor(Math.random()*top.length)];
   }
 
   function maybeSubstitute(degree, complexity, density, bar) {
@@ -201,6 +250,7 @@
     const complexity = Number(els.complexity.value);
     const density = Number(els.density.value);
     const voiceDepth = Number(els.voiceLeading.value);
+    const width = Number(els.width.value);
 
     let previousVoicing = null;
     let previousChord = null;
@@ -212,26 +262,26 @@
         const root = rootForDegree(key,4);
         const rootPc = (pitchClass[root] + 1) % 12;
         const quality = {name:'dim7', intervals:[0,3,6,9]};
-        const voicing = chooseVoicing(rootPc,quality.intervals,previousVoicing,voiceDepth);
-        const chord = {bar,degree:'passing',role:'chromatic',root:rootNames[rootPc],quality,voicing};
-        previousVoicing = voicing;
+        const picked = chooseVoicing(rootPc,quality.intervals,previousVoicing,voiceDepth,width);
+        const chord = {bar,degree:'passing',role:'chromatic',root:rootNames[rootPc],quality,voicing:picked.notes,family:picked.family,span:picked.span};
+        previousVoicing = picked.notes;
         previousChord = chord;
         return chord;
       }
 
       const root = rootForDegree(key,degree);
       const quality = chooseQuality(complexity,density,degree,bar,form,previousChord,root);
-      const voicing = chooseVoicing(pitchClass[root],quality.intervals,previousVoicing,voiceDepth);
-      const chord = {bar,degree,role:roleNames[degree],root,quality,voicing};
+      const picked = chooseVoicing(pitchClass[root],quality.intervals,previousVoicing,voiceDepth,width);
+      const chord = {bar,degree,role:roleNames[degree],root,quality,voicing:picked.notes,family:picked.family,span:picked.span};
 
-      previousVoicing = voicing;
+      previousVoicing = picked.notes;
       previousChord = chord;
       return chord;
     });
 
     els.title.textContent = `12 bars in ${key}`;
     renderProgression();
-    els.status.textContent = 'Regenerated without repeated voicings.';
+    els.status.textContent = 'Regenerated with connected voice-led voicings.';
   }
 
   function renderProgression() {
@@ -252,7 +302,7 @@
     document.querySelectorAll('.bar').forEach((b,i)=>b.classList.toggle('selected',i===index));
     const chord=progression[index];
     els.detailChord.textContent=`Bar ${index+1}: ${chord.root}${chord.quality.name}`;
-    els.detailNotes.textContent=`Voicing: ${chord.voicing.map(midiName).join(', ')}. Role: ${chord.role}.`;
+    els.detailNotes.textContent=`Voicing: ${chord.voicing.map(midiName).join(', ')}. Family: ${chord.family}. Span: ${chord.span} semitones. Role: ${chord.role}.`;
   }
 
   function createAudio() {
@@ -377,11 +427,12 @@
     els.complexityOutput.value=els.complexity.value;
     els.densityOutput.value=els.density.value;
     els.voiceLeadingOutput.value=els.voiceLeading.value;
+    els.widthOutput.value=els.width.value;
   }
 
-  [els.tempo,els.complexity,els.density,els.voiceLeading].forEach(input=>input.addEventListener('input',syncOutputs));
+  [els.tempo,els.complexity,els.density,els.voiceLeading,els.width].forEach(input=>input.addEventListener('input',syncOutputs));
   [els.key,els.form].forEach(input=>input.addEventListener('change',buildProgression));
-  [els.complexity,els.density,els.voiceLeading].forEach(input=>input.addEventListener('change',buildProgression));
+  [els.complexity,els.density,els.voiceLeading,els.width].forEach(input=>input.addEventListener('change',buildProgression));
   els.regenerate.addEventListener('click',buildProgression);
   els.play.addEventListener('click',play);
   els.stop.addEventListener('click',()=>stop());
