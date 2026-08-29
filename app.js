@@ -39,8 +39,13 @@
   let progression = [];
   let audioContext = null;
   let master = null;
-  let timer = null;
+  let transportTimer = null;
+  let playing = false;
   let activeBar = -1;
+  let nextBarIndex = 0;
+  let nextBarTime = 0;
+  let pendingActiveBar = null;
+  let pendingActiveTime = 0;
 
   const clamp = (v,min,max) => Math.max(min,Math.min(max,v));
   const midiName = midi => `${rootNames[((midi % 12) + 12) % 12]}${Math.floor(midi/12)-1}`;
@@ -48,6 +53,7 @@
   const rootForDegree = (key, degree) => rootNames[(pitchClass[key] + degreeSemitones[degree]) % 12];
   const sameVoicing = (a,b) => Boolean(a && b && a.length === b.length && a.every((n,i)=>n===b[i]));
   const pitchClassOf = midi => ((midi % 12) + 12) % 12;
+  const secondsPerBar = () => (60 / Number(els.tempo.value)) * 4;
 
   function baseQuality(degree, form) {
     if (form === 'jazz' && [2,3].includes(degree)) return {name:'m7', intervals:[0,3,7,10], weight:10};
@@ -56,13 +62,11 @@
 
   function vocabulary(complexity, degree, form) {
     const pool = [baseQuality(degree, form)];
-
     if (form === 'jazz' && [2,3].includes(degree)) {
       if (complexity >= 18) pool.push({name:'m9', intervals:[0,3,10,14], weight:8});
       if (complexity >= 58) pool.push({name:'m11', intervals:[0,3,10,14,17], weight:5});
       return pool;
     }
-
     if (complexity >= 12) pool.push({name:'9', intervals:[0,4,10,14], weight:8});
     if (complexity >= 28) pool.push({name:'13', intervals:[0,4,10,14,21], weight:7});
     if (complexity >= 42) pool.push({name:'7#9', intervals:[0,4,10,15], weight:5});
@@ -71,7 +75,6 @@
     if (complexity >= 72) pool.push({name:'7b9', intervals:[0,4,10,13], weight:4});
     if (complexity >= 82) pool.push({name:'7#5#9', intervals:[0,4,8,10,15], weight:3});
     if (form === 'jazz' && degree === 6) pool.push({name:'7b9', intervals:[0,4,10,13], weight:10});
-
     return pool;
   }
 
@@ -90,7 +93,6 @@
     const structuralBoost = [3,7,8,9,11].includes(barIndex) ? 0.18 : 0;
     const richChance = clamp((density / 100) + structuralBoost, 0, 1);
     const pool = vocabulary(complexity, degree, form);
-
     let candidates = Math.random() > richChance ? [baseline] : [...pool];
 
     if (previousChord && previousChord.root === root && pool.length > 1) {
@@ -98,7 +100,6 @@
       const varied = source.filter(q => q.name !== previousChord.quality.name);
       if (varied.length) candidates = varied;
     }
-
     return candidates.length === 1 ? candidates[0] : weightedPick(candidates);
   }
 
@@ -142,22 +143,18 @@
         addCandidate(result, drop3, 'drop-3', rootPc);
       }
 
-      const open = closed.map((n,i) => i % 2 === 1 ? n + 12 : n);
-      addCandidate(result, open, 'open', rootPc);
+      addCandidate(result, closed.map((n,i) => i % 2 === 1 ? n + 12 : n), 'open', rootPc);
 
       if (closed.length >= 4) {
-        const topDoubled = [...closed, closed[closed.length-1] + 12];
-        addCandidate(result, topDoubled, 'octave top', rootPc);
+        addCandidate(result, [...closed, closed[closed.length-1] + 12], 'octave top', rootPc);
       }
 
       const rootless = closed.filter(n => pitchClassOf(n) !== rootPc);
       if (rootless.length >= 3) {
         addCandidate(result, rootless, 'rootless', rootPc);
-        const rootlessOpen = rootless.map((n,i)=> i === rootless.length-1 ? n + 12 : n);
-        addCandidate(result, rootlessOpen, 'rootless open', rootPc);
+        addCandidate(result, rootless.map((n,i)=> i === rootless.length-1 ? n + 12 : n), 'rootless open', rootPc);
       }
     }
-
     return [...result.values()];
   }
 
@@ -186,7 +183,6 @@
 
   function chooseVoicing(rootPc, intervals, previous, depth, width) {
     let candidates = candidateVoicings(rootPc, intervals);
-
     if (previous && candidates.length > 1) {
       const nonRepeating = candidates.filter(c => !sameVoicing(c.notes, previous));
       if (nonRepeating.length) candidates = nonRepeating;
@@ -201,9 +197,8 @@
       return [...candidates].sort((a,b)=>{
         const ac = a.notes.reduce((x,y)=>x+y,0)/a.notes.length;
         const bc = b.notes.reduce((x,y)=>x+y,0)/b.notes.length;
-        const aw = Math.abs(a.span-targetSpan);
-        const bw = Math.abs(b.span-targetSpan);
-        return (aw + Math.abs(ac-61)*0.25) - (bw + Math.abs(bc-61)*0.25);
+        return (Math.abs(a.span-targetSpan) + Math.abs(ac-61)*0.25) -
+               (Math.abs(b.span-targetSpan) + Math.abs(bc-61)*0.25);
       })[0];
     }
 
@@ -219,16 +214,17 @@
         return penalty + Math.max(0,Math.abs(n-p)-7);
       },0);
 
-      const score =
-        move * (0.25 + depth/100) +
-        spanError * 0.45 +
-        Math.abs(center-61) * 0.14 +
-        hugeJumpPenalty * (0.45 + depth/125) -
-        common * (1.5 + depth/28) -
-        contrary * (depth/18) +
-        (candidate.family.startsWith('rootless') ? 0.8 : 0);
-
-      return {...candidate,score};
+      return {
+        ...candidate,
+        score:
+          move * (0.25 + depth/100) +
+          spanError * 0.45 +
+          Math.abs(center-61) * 0.14 +
+          hugeJumpPenalty * (0.45 + depth/125) -
+          common * (1.5 + depth/28) -
+          contrary * (depth/18) +
+          (candidate.family.startsWith('rootless') ? 0.8 : 0)
+      };
     }).sort((a,b)=>a.score-b.score);
 
     const freedom = Math.floor((100-depth)/22);
@@ -242,9 +238,7 @@
     return degree;
   }
 
-  function buildProgression() {
-    stop(false);
-
+  function buildProgression(statusText = null) {
     const key = normalizeRoot(els.key.value);
     const form = els.form.value;
     const complexity = Number(els.complexity.value);
@@ -273,7 +267,6 @@
       const quality = chooseQuality(complexity,density,degree,bar,form,previousChord,root);
       const picked = chooseVoicing(pitchClass[root],quality.intervals,previousVoicing,voiceDepth,width);
       const chord = {bar,degree,role:roleNames[degree],root,quality,voicing:picked.notes,family:picked.family,span:picked.span};
-
       previousVoicing = picked.notes;
       previousChord = chord;
       return chord;
@@ -281,18 +274,18 @@
 
     els.title.textContent = `12 bars in ${key}`;
     renderProgression();
-    els.status.textContent = 'Regenerated with connected voice-led voicings.';
+    if (statusText) els.status.textContent = statusText;
   }
 
   function renderProgression() {
     els.progression.innerHTML = '';
-
     progression.forEach((chord,index) => {
       const button = document.createElement('button');
       button.type='button';
       button.className='bar';
       button.dataset.bar=String(index+1);
       button.innerHTML = `<span class="chord-role">${chord.role}</span><span class="chord-name">${chord.root}${chord.quality.name}</span><span class="chord-notes">${chord.voicing.map(midiName).join(' · ')}</span>`;
+      if (index === activeBar) button.classList.add('active');
       button.addEventListener('click',()=>selectBar(index));
       els.progression.appendChild(button);
     });
@@ -369,47 +362,66 @@
     });
   }
 
-  function scheduleBar(index,start,secondsPerBar) {
+  function scheduleBar(index,start,duration) {
     const chord=progression[index];
-    const attackOffset = index === 0 ? 0 : 0.012;
-    chord.voicing.forEach((note,i)=>playOrganNote(note,start+attackOffset+i*.007,secondsPerBar*.82,1-(i*.04)));
+    chord.voicing.forEach((note,i)=>playOrganNote(note,start+i*.007,duration*.82,1-(i*.04)));
   }
 
-  function updateActiveBar(index) {
+  function setActiveBar(index) {
     activeBar=index;
     document.querySelectorAll('.bar').forEach((b,i)=>b.classList.toggle('active',i===index));
     els.status.textContent=`Playing bar ${index+1} of 12`;
   }
 
-  async function play() {
-    stop(false);
-    createAudio();
-    if (audioContext.state === 'suspended') await audioContext.resume();
+  function transportTick() {
+    if (!playing || !audioContext) return;
+    const now = audioContext.currentTime;
 
-    const tempo=Number(els.tempo.value);
-    const secondsPerBeat=60/tempo;
-    const secondsPerBar=secondsPerBeat*4;
-    const startTime=audioContext.currentTime+.08;
+    if (pendingActiveBar !== null && now >= pendingActiveTime) {
+      setActiveBar(pendingActiveBar);
+      pendingActiveBar = null;
+    }
 
-    progression.forEach((_,i)=>scheduleBar(i,startTime+i*secondsPerBar,secondsPerBar));
-    updateActiveBar(0);
-
-    const startedAt=performance.now()+80;
-    timer=setInterval(()=>{
-      const elapsed=(performance.now()-startedAt)/1000;
-      const index=Math.floor(elapsed/secondsPerBar);
-      if (index>=12) {
+    if (now >= nextBarTime - 0.06) {
+      if (nextBarIndex >= progression.length) {
         stop();
         return;
       }
-      if (index!==activeBar) updateActiveBar(index);
-    },40);
+
+      const duration = secondsPerBar();
+      scheduleBar(nextBarIndex,nextBarTime,duration);
+      pendingActiveBar = nextBarIndex;
+      pendingActiveTime = nextBarTime;
+      nextBarTime += duration;
+      nextBarIndex += 1;
+    }
+  }
+
+  async function play() {
+    if (playing) return;
+    createAudio();
+    if (audioContext.state === 'suspended') await audioContext.resume();
+
+    playing = true;
+    nextBarIndex = 0;
+    const start = audioContext.currentTime + 0.04;
+    const duration = secondsPerBar();
+    scheduleBar(0,start,duration);
+    nextBarIndex = 1;
+    nextBarTime = start + duration;
+    pendingActiveBar = 0;
+    pendingActiveTime = start;
+
+    transportTimer = setInterval(transportTick,25);
+    transportTick();
   }
 
   function stop(updateStatus=true) {
-    if (timer) clearInterval(timer);
-    timer=null;
+    playing=false;
+    if (transportTimer) clearInterval(transportTimer);
+    transportTimer=null;
     activeBar=-1;
+    pendingActiveBar=null;
     document.querySelectorAll('.bar').forEach(b=>b.classList.remove('active'));
 
     if (audioContext) {
@@ -430,13 +442,38 @@
     els.widthOutput.value=els.width.value;
   }
 
-  [els.tempo,els.complexity,els.density,els.voiceLeading,els.width].forEach(input=>input.addEventListener('input',syncOutputs));
-  [els.key,els.form].forEach(input=>input.addEventListener('change',buildProgression));
-  [els.complexity,els.density,els.voiceLeading,els.width].forEach(input=>input.addEventListener('change',buildProgression));
-  els.regenerate.addEventListener('click',buildProgression);
+  function liveHarmonyUpdate() {
+    syncOutputs();
+    buildProgression(playing ? 'Updated — next bar uses the new setting.' : 'Updated.');
+  }
+
+  [els.complexity,els.density,els.voiceLeading,els.width].forEach(input=>{
+    input.addEventListener('input',liveHarmonyUpdate);
+  });
+
+  els.tempo.addEventListener('input',()=>{
+    syncOutputs();
+    if (playing) els.status.textContent='Tempo updated for the next bar.';
+  });
+
+  [els.key,els.form].forEach(input=>input.addEventListener('change',()=>{
+    buildProgression(playing ? 'Harmony updated for the next bar.' : 'Updated.');
+  }));
+
+  document.querySelectorAll('[data-drawbar]').forEach(input=>{
+    input.addEventListener('input',()=>{
+      if (playing) els.status.textContent='Registration updated for the next bar.';
+    });
+  });
+
+  els.leslie.addEventListener('change',()=>{
+    if (playing) els.status.textContent='Leslie setting updated for the next bar.';
+  });
+
+  els.regenerate.addEventListener('click',()=>buildProgression(playing ? 'Regenerated — next bar uses it.' : 'Regenerated.'));
   els.play.addEventListener('click',play);
   els.stop.addEventListener('click',()=>stop());
 
   syncOutputs();
-  buildProgression();
+  buildProgression('Ready.');
 })();
