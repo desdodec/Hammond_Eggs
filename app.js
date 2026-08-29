@@ -25,17 +25,25 @@
   let audioContext = null;
   let master = null;
   let timer = null;
-  let playing = false;
   let activeBar = -1;
-  let barStartTime = 0;
 
   const clamp = (v,min,max) => Math.max(min,Math.min(max,v));
   const midiName = midi => `${rootNames[((midi % 12) + 12) % 12]}${Math.floor(midi/12)-1}`;
   const normalizeRoot = n => enharmonic[n] || n;
   const rootForDegree = (key, degree) => rootNames[(pitchClass[key] + degreeSemitones[degree]) % 12];
 
+  function baseQuality(degree, form) {
+    if (form === 'jazz' && [2,3].includes(degree)) return {name:'m7', intervals:[0,3,7,10], weight:10};
+    return {name:'7', intervals:[0,4,7,10], weight:10};
+  }
+
   function vocabulary(complexity, degree, form) {
-    const pool = [{name:'7', intervals:[0,4,7,10], weight:10}];
+    const pool = [baseQuality(degree, form)];
+    if (form === 'jazz' && [2,3].includes(degree)) {
+      if (complexity >= 18) pool.push({name:'m9', intervals:[0,3,10,14], weight:8});
+      if (complexity >= 58) pool.push({name:'m11', intervals:[0,3,10,14,17], weight:5});
+      return pool;
+    }
     if (complexity >= 12) pool.push({name:'9', intervals:[0,4,10,14], weight:8});
     if (complexity >= 28) pool.push({name:'13', intervals:[0,4,10,14,21], weight:7});
     if (complexity >= 42) pool.push({name:'7#9', intervals:[0,4,10,15], weight:5});
@@ -43,13 +51,7 @@
     if (complexity >= 62) pool.push({name:'13b9', intervals:[0,4,10,13,21], weight:4});
     if (complexity >= 72) pool.push({name:'7b9', intervals:[0,4,10,13], weight:4});
     if (complexity >= 82) pool.push({name:'7#5#9', intervals:[0,4,8,10,15], weight:3});
-    if (form === 'jazz' && [2,3].includes(degree)) {
-      pool.unshift({name:'m7', intervals:[0,3,7,10], weight:10});
-      if (complexity > 35) pool.unshift({name:'m9', intervals:[0,3,10,14], weight:8});
-    }
-    if (form === 'jazz' && degree === 6) {
-      pool.unshift({name:'7b9', intervals:[0,4,10,13], weight:10});
-    }
+    if (form === 'jazz' && degree === 6) pool.push({name:'7b9', intervals:[0,4,10,13], weight:10});
     return pool;
   }
 
@@ -61,9 +63,10 @@
   }
 
   function chooseQuality(complexity, density, degree, barIndex, form) {
+    const baseline = baseQuality(degree, form);
     const richChance = density / 100;
     const structuralBoost = [3,7,8,9,11].includes(barIndex) ? 0.18 : 0;
-    if (Math.random() > clamp(richChance + structuralBoost,0,1)) return {name:'7', intervals:[0,4,7,10]};
+    if (Math.random() > clamp(richChance + structuralBoost,0,1)) return baseline;
     return weightedPick(vocabulary(complexity, degree, form));
   }
 
@@ -82,8 +85,7 @@
         if (shifted[0] >= 43 && shifted[shifted.length-1] <= 79) result.push(shifted);
       }
     }
-    const unique = new Map(result.map(v => [v.join(','),v]));
-    return [...unique.values()];
+    return [...new Map(result.map(v => [v.join(','),v])).values()];
   }
 
   function voiceDistance(a,b) {
@@ -97,16 +99,17 @@
   function chooseVoicing(rootPc, intervals, previous, depth) {
     const candidates = candidateVoicings(rootPc, intervals);
     if (!previous || depth <= 3) {
-      const basic = candidates.find(v => v.some(n => n % 12 === rootPc));
-      return basic || candidates[0];
+      const rootPosition = candidates
+        .filter(v => ((v[0] % 12) + 12) % 12 === rootPc)
+        .sort((a,b)=>Math.abs((a.reduce((x,y)=>x+y,0)/a.length)-61)-Math.abs((b.reduce((x,y)=>x+y,0)/b.length)-61));
+      return rootPosition[0] || candidates[0];
     }
-    const centerTarget = 61;
     const scored = candidates.map(v => {
       const move = voiceDistance(previous,v);
       const center = v.reduce((a,b)=>a+b,0)/v.length;
       const spread = v[v.length-1]-v[0];
       const repetitionPenalty = v.join(',') === previous.join(',') ? 8 : 0;
-      const score = move*(depth/100) + Math.abs(center-centerTarget)*0.3 + Math.max(0,spread-24)*0.25 + repetitionPenalty*(depth/100);
+      const score = move*(depth/100) + Math.abs(center-61)*0.3 + Math.max(0,spread-24)*0.25 + repetitionPenalty*(depth/100);
       return {v,score};
     }).sort((a,b)=>a.score-b.score);
     const looseness = Math.floor((100-depth)/25);
@@ -121,7 +124,7 @@
   }
 
   function buildProgression() {
-    stop();
+    stop(false);
     const key = normalizeRoot(els.key.value);
     const form = els.form.value;
     const complexity = Number(els.complexity.value);
@@ -189,7 +192,7 @@
     const gain=ctx.createGain();
     const filter=ctx.createBiquadFilter();
     filter.type='lowpass'; filter.frequency.value=4200; filter.Q.value=.5;
-    const leslie=els.leslie.checked;
+    const movingLeslie=els.leslie.checked;
     const pan=ctx.createStereoPanner ? ctx.createStereoPanner() : null;
     const levels=drawbarLevels();
     const ratios=[0.5,1.5,1,2,3,4];
@@ -210,7 +213,7 @@
     gain.gain.linearRampToValueAtTime(0.45*velocity,start+0.025);
     gain.gain.setValueAtTime(0.38*velocity,start+Math.max(.05,duration-.12));
     gain.gain.linearRampToValueAtTime(0,start+duration);
-    if (pan && leslie) {
+    if (pan && movingLeslie) {
       const phase=(start*2.4)%6.28;
       pan.pan.setValueAtTime(Math.sin(phase)*.2,start);
       pan.pan.linearRampToValueAtTime(Math.sin(phase+2.8)*.2,start+duration);
@@ -231,15 +234,14 @@
   }
 
   async function play() {
+    stop(false);
     createAudio();
     if (audioContext.state === 'suspended') await audioContext.resume();
-    stop(false);
-    playing=true;
     const tempo=Number(els.tempo.value);
     const secondsPerBeat=60/tempo;
     const secondsPerBar=secondsPerBeat*4;
-    barStartTime=audioContext.currentTime+.08;
-    progression.forEach((_,i)=>scheduleBar(i,barStartTime+i*secondsPerBar,secondsPerBar));
+    const startTime=audioContext.currentTime+.08;
+    progression.forEach((_,i)=>scheduleBar(i,startTime+i*secondsPerBar,secondsPerBar));
     updateActiveBar(0);
     const startedAt=performance.now()+80;
     timer=setInterval(()=>{
@@ -252,10 +254,13 @@
 
   function stop(updateStatus=true) {
     if (timer) clearInterval(timer);
-    timer=null; playing=false; activeBar=-1;
+    timer=null; activeBar=-1;
     document.querySelectorAll('.bar').forEach(b=>b.classList.remove('active'));
-    if (master && audioContext) {
-      try { master.gain.cancelScheduledValues(audioContext.currentTime); master.gain.setValueAtTime(0.2,audioContext.currentTime); } catch (_) {}
+    if (audioContext) {
+      const oldContext=audioContext;
+      audioContext=null;
+      master=null;
+      oldContext.close().catch(()=>{});
     }
     if (updateStatus) els.status.textContent='Stopped.';
   }
