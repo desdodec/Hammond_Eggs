@@ -59,8 +59,14 @@
 
       <label>
         <span>Voice leading <output id="voiceLeadingOutput">75</output>%</span>
-        <small>Static shapes → minimum-motion voicings</small>
+        <small>Static shapes → connected independent voices</small>
         <input id="voiceLeading" type="range" min="0" max="100" value="75" />
+      </label>
+
+      <label>
+        <span>Voicing width <output id="widthOutput">55</output>%</span>
+        <small>Tight clusters → open / octave-spread voicings</small>
+        <input id="width" type="range" min="0" max="100" value="55" />
       </label>
     </section>
 
@@ -94,7 +100,7 @@
     <section class="detail-panel" id="detailPanel" aria-live="polite">
       <p class="section-kicker">Selected voicing</p>
       <h2 id="detailChord">Choose a bar</h2>
-      <p id="detailNotes">Click any chord to inspect its actual notes.</p>
+      <p id="detailNotes">Click any chord to inspect its actual notes and voicing family.</p>
     </section>
   </main>
 
